@@ -1,186 +1,227 @@
-# Segunda iteración paquete de instrumentación
-# Generación de diagrama de lazos de control
+# Segunda iteración del paquete de instrumentación
+# Diagramas de conexionado
 library(tidyverse)
 rm(list = ls())
 source("funciones.R")
+# Definicion de los pares permitidos y el porcentaje de reservas
+pares_perm = c(1, 2, 4, 8, 12, 16, 24)
+reserva <- 1.25
 
-# Constantes usadas
-# Cantidad de slots por rack
-SR<-12
-# Primer slot permitido para instalación de módulos IO
-PS<-2
-# Cantidad de canales por tipo de modulo IO
-c_DI<-16
-c_DO<-16
-c_AI<-8
-c_AO<-8
-c_RTD<-6
-c_TC<-6
-# Construcción tabla 4, lazos de control
-sig_cabl<-read_csv("entradas/tabla3.csv")%>%
-  filter(Tag_Sig != "RESERVA")
-tabla4<-read_csv("entradas/list_sig.csv")%>%
-  select(`Tag señal`, Origen, `Locación`, Lazo, Servicio, `Tipo de I/O`, `Set Al`, `Un Ing`, 
-         HMI, Interbloqueos, `Log de eventos`, Tendencia, `Histórico`)%>%
-  rename(Tag_Sig = `Tag señal`, Tipo_IO = `Tipo de I/O`, Set_Al = `Set Al`, Und_Ing = `Un Ing`,
-         Interl = Interbloqueos, Log_Ev = `Log de eventos`, Tend = Tendencia, Hist = `Histórico`,
-         Loc = `Locación`)%>%
-  left_join(sig_cabl)%>%
-  mutate(ch_md = case_when(
-           Tipo_IO == "AI" ~ c_AI,
-           Tipo_IO == "AO" ~ c_AO,
-           Tipo_IO == "DI" ~ c_DI,
-           Tipo_IO == "DO" ~ c_DO,
-           Tipo_IO == "RTD" ~ c_RTD,
-           Tipo_IO == "TC" ~ c_TC
-           )
-         )
-
-# Conteo de controladores
-CNTRL<-tabla4%>%
+# Selección, filtrado y procesamiento de los datos de entrada
+entr<-read_csv("entradas/list_sig.csv")%>%
+  select(`Tag señal`, Origen, `Tipo de I/O`, `Tipo de señal`, destino, Controlador)%>%
+  rename("Tag_Sig" = "Tag señal", "Tipo_IO" = "Tipo de I/O", "Tipo_Sig" = "Tipo de señal",
+         "Dest" = "destino", "Cntrl" = "Controlador")%>%
   filter(Tipo_IO != "S")%>%
-  group_by(Cntrl)%>%
-  summarise()
+  mutate(Tipo_Sig = case_when(
+    Tipo_Sig == "Sink 24 VDC" ~ "D",
+    Tipo_Sig == "4-20 mA" ~ "A",
+    Tipo_Sig == "3-wire RTD" ~ "R",
+    Tipo_Sig == "TC" ~ "T"))
 
-# Asignación del IO
-IO<-tabla4%>%
-  select(Tag_Sig, Tipo_IO, ch_md, Cntrl)%>%
-  arrange(Cntrl, Tipo_IO)
-IO_Out<-tibble(IO[0,], ch = numeric(), md= numeric(), rk = numeric())
+## Creación de los cables de dispositivos en campo (tabla1)
+cab <- entr %>%
+  group_by(Origen, Tipo_Sig, Dest, Cntrl) %>%
+  summarise(pares = n())%>%
+  ungroup()%>%
+  # se crea un tag previo de cable y se define la cantidad de cables requeridos por cada origen/tipo
+  mutate(cb_req = ceiling(reserva*pares/max(pares_perm)),
+         cable_prev = paste("CB", Origen, Tipo_Sig, sep = "-"))
 
-for(i in CNTRL$Cntrl){
-  IO1<-filter(IO, Cntrl == i & Tipo_IO != "S")
-  IO1<-asig_IO(IO1)
-  IO_Out<-bind_rows(IO_Out, IO1)
-}
-
-# Conjunción con la tabla de lazos.
-tabla4<-tabla4%>%
-  left_join(IO_Out)
-
-# Limpieza de variables
-rm(CNTRL, IO, IO_Out, IO1, i, sig_cabl)
-
-# Resumen de lazos
-resumen<-tabla4%>%
-  group_by(Lazo)%>%
-  summarise()
-
-## Generación del numero de pagina de cada señal cableada (indice para señales)
-
-# Arrancamos de la pagina 3, para dejar una portada y un indice
-pg<-3
-ind_sig<-matrix(nrow = 0, ncol = 7)
-soft<-matrix(nrow = 0, ncol = 7)
-s<-0
-for(i in resumen$Lazo){
-  test<-tabla4%>%
-    filter(Lazo == i)
-  ind_sig1<-vector(mode = "character", 7)
-  soft1<-vector(mode = "character", 7)
-  ocup_acc<-0
-  for(j in 1:nrow(test)){
-    if(test$Tipo_IO[[j]] != "S"){
-      k = j+1
-      c_S<-0
-      s<-s+1
-      soft2<-matrix(nrow = 0, ncol = 7)
-      if(k<=nrow(test)){
-        while(test$Tipo_IO[k] == "S"){
-          c_S<-c_S+1
-          soft1<-c(test$Tag_Sig[k], test$Lazo[k], 0, 0, 0, 0, s)
-          soft2<-rbind(soft2, soft1, deparse.level = 0)
-          if(k+1<=nrow(test)){
-            k<-k+1
-          }else{
-            break
-          }
-        }
+# Asignación de cables a dispositivos de campo
+cables<-matrix(nrow = 0, ncol = 5)
+res<-as.matrix(entr[0,])
+for(i in 1:length(cab$Origen)){
+  # Verificacion de si los pares requerido se ajustan a los pares permitidos
+  ifelse(sum(cab$pares[i]==pares_perm), add_res<-0, add_res<-1)
+  for(j in 1:cab$cb_req[i]){
+    cable <- paste(cab$cable_prev[i], j, sep = "-")
+    for(k in 1:cab$pares[i]){
+      cable1<-c(cab$Origen[i], cable, k, cab$Tipo_Sig[i], "nor")
+      cables<-rbind(cables, cable1, deparse.level = 0)
+    }
+    # Adición de pares de reserva para ajustarse a los pares permitidos
+    if(add_res==1){
+      par_req<-pares_perm[which(pares_perm/cab$pares[i]>1)[1]]
+      for(m in 1:(par_req-cab$pares[i])){
+        cable2<-c(cab$Origen[i], cable1[2], cab$pares[i]+m, cab$Tipo_Sig[i], "res")
+        cables<-rbind(cables, cable2, deparse.level = 0)
+        r<-c("ZZZZZZZZ", cab$Origen[i], NA, cab$Tipo_Sig[i], cab$Dest[i], cab$Cntrl[i])
+        res<-rbind(res, r, deparse.level = 0)
       }
-      ocup<-ifelse(c_S<3, 36, 36+10.5*(c_S-2))
-      ocup_acc<-ocup_acc+ocup
-      if(ocup_acc>108){
-        pg<-pg+1
-        ocup_acc<-ocup
-      }
-      ind_sig1<-c(test$Tag_Sig[j], test$Lazo[j], c_S, ocup, ocup_acc, pg, s)
-      ind_sig<-rbind(ind_sig, ind_sig1, deparse.level = 0)
-      soft2[, 6]<-pg
-      soft<-rbind(soft, soft2, deparse.level = 0)
     }
   }
-  pg<-pg+1
 }
-ind_sig<-as_tibble(ind_sig)%>%
-  rename(Tag_Sig = V1, Lazo = V2, Cant_Soft = V3, Altura = V4, Alt_Acum = V5, Pag = V6, Conj_Sig = V7)
-soft<-as_tibble(soft)%>%
-  rename(Tag_Sig = V1, Lazo = V2, Cant_Soft = V3, Altura = V4, Alt_Acum = V5, Pag = V6, Conj_Sig = V7)
-ind_sig<-bind_rows(ind_sig, soft)
+cables<-as_tibble(cables)%>%
+  arrange(V1, V4, V3)%>%
+  rename("Cable1" = "V2", "Par1" = "V3")
+res<-as_tibble(res)
 
-tabla4<-tabla4%>%
-  left_join(ind_sig)%>%
-  mutate(Conj_Sig = as.numeric(Conj_Sig), Pag = as.numeric(Pag))
+# Construcción de la tabla1 adicionando las columnas de Cable1 y Par1
+if(nrow(res)==0){
+  tabla1<-entr
+}else{
+  tabla1<-bind_rows(entr, res)
+}
+
+tabla1<-tabla1%>%
+  arrange(Origen, Tipo_Sig, Tag_Sig)%>%
+  bind_cols(select(cables, Cable1, Par1))%>%
+  mutate(Par1 = as.numeric(Par1))
 
 # Limpieza de variables
-rm(ind_sig, resumen, soft, soft2, test, i, ind_sig1, j, k, ocup, ocup_acc, pg, s, soft1, c_S)
+rm(cab, res, cables, add_res, cable, cable1, cable2, i, j, k, m, par_req, r)
 
-## Construcción de la matriz de hojas
-fact<-vector(mode = "numeric", length = 0)
-p_req<-max(as.numeric(tabla4$Pag))
-p_sel<-10*ceiling(p_req/10)
-for(i in 1:p_sel){
-  if(p_sel%%i == 0){
-    fact<-c(fact, i)
+## Creación de Cables Multiconductores
+
+# Calculo de cantidad de pares por tipo de señal requeridos en cada caja
+cab <- tabla1 %>%
+  filter(str_detect(Dest, "^JBI"))%>%
+  group_by(Dest, Tipo_Sig, Cntrl)%>%
+  summarise(pares = n())%>%
+  ungroup()%>%
+  # se crea un tag de cable previo y se define la cantidad de cables requeridos por cada origen/tipo
+  mutate(cb_req = ceiling(reserva*pares/max(pares_perm)),
+         cable = paste("CB", Dest, Tipo_Sig, sep = "-"),
+         pares = ceiling(reserva*pares))%>%
+  rename("Origen" = "Dest", "Dest" = "Cntrl")
+
+# Se determina la cantidad de cables requeridos para respetar la máxima cantidad permitida de pares,
+# Se define la cantidad final de pares y numero de tag asignado a cada cable
+
+# Si hay casos en los que se requiere mas de un multicoductor porque las señales superan los pares permitidos:
+if(max(cab$cb_req)>1){
+  cab2<-cab[0, ]
+  for(l in 1:(max(cab$cb_req)-1)){
+    cab1<-cab%>%
+      filter(cb_req>l)%>%
+      mutate(pares = pares-l*max(pares_perm))
+    cab2<-bind_rows(cab2, cab1)
+  }
+  cab<-bind_rows(cab, cab2)%>%
+    mutate(pares = ifelse(pares>max(pares_perm), max(pares_perm), pares),
+           cb_req = 1)
+}
+
+# Definicion final de los cables
+cab<-cab%>%
+  arrange(Origen, Tipo_Sig)%>%
+  group_by(Origen, Tipo_Sig)%>%
+  mutate(cable = paste(cable, cumsum(cb_req), sep = "-"))
+
+# Generación de los pares de cada multiconductor
+cables<-matrix(nrow = 0, ncol = 5)
+for(i in 1:length(cab$Origen)){
+  cab$pares[i]<-ifelse(sum(cab$pares[i]==pares_perm), cab$pares[i], 
+                       pares_perm[which(pares_perm/cab$pares[i]>1)[1]])
+  # Generación de los pares en cada multiconductor
+  for(k in 1:cab$pares[i]){
+    cable1<-c(cab$Origen[i], cab$cable[i], k, cab$Tipo_Sig[i], cab$Dest[i])
+    cables<-rbind(cables, cable1, deparse.level = 0)
   }
 }
-filas<-fact[length(fact)/2]
-columnas<-fact[length(fact)/2+1]
-k<-1
-mat_hoj<-matrix(nrow = 0, ncol = 3)
-for(i in 1:columnas){
-  for(j in 1:filas){
-    mat_hoj1<-c(k, i-1, j-1)
-    mat_hoj<-rbind(mat_hoj, mat_hoj1, deparse.level = 0)
-    k = k+1
-  }
-}
-mat_hoj<-as_tibble(mat_hoj[1:p_req, ])%>%
-  rename(Pag = V1, Fila = V2, Columna = V3)
-  #mutate(Pag = as.character(Pag))
+cables<-as_tibble(cables)%>%
+  mutate(V3=as.numeric(V3))%>%
+  rename("Dest" = "V1", "Cable2" = "V2", "Par2" = "V3", "Tipo_Sig" = "V4", "Cntrl" = "V5")%>%
+  mutate(Cab=as.numeric(str_sub(Cable2, -1, -1)))
 
-tabla4<-tabla4%>%
-  left_join(mat_hoj)
+## Creación de la tabla 2, diagrama de conexionado de cajas
+tabla2<-tabla1%>%
+  filter(str_detect(Dest, "^JBI"))%>%
+  group_by(Dest, Tipo_Sig)%>%
+  mutate(t=1, Par2 = cumsum(t), Cab = (Par2-1)%/%max(pares_perm)+1)%>%
+  ungroup()%>%
+  group_by(Dest, Tipo_Sig, Cab)%>%
+  mutate(Par2 = cumsum(t))%>%
+  ungroup()%>%
+  right_join(cables)%>%
+  arrange(Dest, Tipo_Sig, Cable2, Par2)
 
 # Limpieza de variables
-rm(mat_hoj, columnas, fact, filas, i, j, k, mat_hoj1, p_req, p_sel)
+rm(cables, cab, cab1, cab2, cable1, i, k, l)
 
-## Tablas de salida para generación de lazos
-pth<-"salidas/lazos.js"
-if(file.exists(pth)){
-  file.remove(pth)
+# Creación de borneras en la caja de conexionado
+tabla2<-tabla2%>%
+  mutate(
+    c_bornes = case_when(
+      Tipo_Sig == "D" ~ 2,
+      Tipo_Sig == "A" ~ 3,
+      Tipo_Sig == "R" ~ 4,
+      Tipo_Sig == "T" ~ 2))%>%
+  group_by(Dest, Tipo_Sig)%>%
+  mutate(b = cumsum(c_bornes), 
+         Jborne1 = b - c_bornes + 1,
+         Jborne2 = b - c_bornes + 2,
+         Jborne3 = ifelse(c_bornes > 2, b-c_bornes + 3, NA),
+         Jborne4 = ifelse(c_bornes > 3, b-c_bornes + 4, NA),
+         JTS = paste("TS", Tipo_Sig, sep = "-"))%>%
+  ungroup()%>%
+  select(-c_bornes, -b, -Cab, -t)
+
+## Tabla 3 Conexionado con gabinetes
+
+tabla3<-tabla1%>%
+  full_join(tabla2)%>%
+  arrange(Cntrl, Tipo_Sig, Cable2)%>%
+  mutate(
+    c_bornes = case_when(
+      Tipo_Sig == "D" ~ 2,
+      Tipo_Sig == "A" ~ 3,
+      Tipo_Sig == "R" ~ 4,
+      Tipo_Sig == "T" ~ 2))%>%
+  group_by(Cntrl, Tipo_Sig)%>%
+  mutate(b = cumsum(c_bornes), 
+         Gborne1 = b - c_bornes + 1,
+         Gborne2 = b - c_bornes + 2,
+         Gborne3 = ifelse(c_bornes > 2, b-c_bornes + 3, NA),
+         Gborne4 = ifelse(c_bornes > 3, b-c_bornes + 4, NA),
+         GTS = paste("TS", Tipo_Sig, sep = "-"))%>%
+  ungroup()
+
+# Para las señales que van directamente al controlador, se define que el Cable2/Par2 = Cable1/Par1
+tabla3$Cable2[is.na(tabla3$Jborne1)]<-tabla3$Cable1[is.na(tabla3$Jborne1)]
+tabla3$Par2[is.na(tabla3$Jborne1)]<-tabla3$Par1[is.na(tabla3$Jborne1)]
+
+# Identificación de reservas
+tabla3$Tag_Sig[tabla3$Tag_Sig == "ZZZZZZZZ"]<-"RESERVA"
+tabla3$Tag_Sig[is.na(tabla3$Tag_Sig)]<-"RESERVA"
+
+## Generación de reportes, se genera un reporte por cada caja o gabinete
+
+# Bornes y Borneras por caja
+
+b_cajas<-tabla3%>%
+  filter(str_detect(Dest, "^JBI"))%>%
+  group_by(Dest, JTS)%>%
+  summarise(bornes = max(cumsum(c_bornes)))
+print(b_cajas)
+
+# Cajas
+d_cajas<-tabla3%>%
+  filter(str_detect(Dest, "^JBI"))%>%
+  select(Tag_Sig, Origen, Tipo_Sig, Cable1, Par1, "TS" = JTS, "borne1"="Jborne1", Jborne2, Jborne3,
+         Jborne4, Cable2, Par2, Dest, Cntrl)
+
+cajas<-d_cajas%>%
+  group_by(Dest)%>%
+  summarise(n())
+
+for(i in cajas$Dest){
+  GEN(d_cajas, i)
 }
 
-for(i in min(tabla4$Pag):max(tabla4$Pag)){
-  sel1<-filter(tabla4, Pag == i)
-  for(j in min(sel1$Conj_Sig):max(sel1$Conj_Sig)){
-    sel2<-filter(sel1, Conj_Sig == j)
-    for(k in 1:nrow(sel2)){
-      d<-paste0("\"", sel2[k, ], "\"", collapse = ", ")
-      d<-paste("var a", k, "=[", d, "];", sep = "")
-      write(d, file = pth, ncolumns = 1, append = T)
-    }
-    e<-paste0("a", 1:nrow(sel2), collapse = ", ")
-    e<-paste0("var s", j, "= [", e, "];")
-    write(e, file = pth, ncolumns = 1, append = T)
-  }
-  f<-paste0("s", min(sel1$Conj_Sig):max(sel1$Conj_Sig), collapse = ", ")
-  f<-paste0("var pag", i, "= [", f, "];")
-  write(f, file = pth, ncolumns = 1, append = T)
+# Gabinetes
+d_gab<-tabla3%>%
+  select(Tag_Sig, Origen, Tipo_Sig, Cable2, Par2, "TS" = GTS, "borne1"="Gborne1", Gborne2, Gborne3,
+         Gborne4, Cable1, Par1, Dest1 = Dest, Dest = Cntrl)%>%
+  mutate(Cable1 = NA, Par1 = NA)
+
+gab<-d_gab%>%
+  group_by(Dest)%>%
+  summarise(n())
+
+for(i in gab$Dest){
+  GEN(d_gab, i)
 }
-g<-paste0("pag", min(tabla4$Pag):max(tabla4$Pag), collapse = ", ")
-g<-paste0("var diag = [", g, "];")
-write(g, file = pth, ncolumns = 1, append = T)
-file.append(pth, "entradas/d_lazo_ini.js")
-
-## Reportes
-
+write_csv(tabla3, "entradas/tabla3.csv")
+write_csv(b_cajas, "salidas/b_cajas.csv")

@@ -5,7 +5,7 @@ rm(list = ls())
 source("funciones.R")
 # Definicion de los pares permitidos y el porcentaje de reservas
 pares_perm = c(1, 2, 4, 8, 12, 16, 24)
-reserva <- 1.1
+reserva <- 1.25
 
 # Selección, filtrado y procesamiento de los datos de entrada
 entr<-read_csv("entradas/list_sig.csv")%>%
@@ -58,7 +58,13 @@ cables<-as_tibble(cables)%>%
 res<-as_tibble(res)
 
 # Construcción de la tabla1 adicionando las columnas de Cable1 y Par1
-tabla1<-bind_rows(entr, res)%>%
+if(nrow(res)==0){
+  tabla1<-entr
+}else{
+  tabla1<-bind_rows(entr, res)
+}
+
+tabla1<-tabla1%>%
   arrange(Origen, Tipo_Sig, Tag_Sig)%>%
   bind_cols(select(cables, Cable1, Par1))%>%
   mutate(Par1 = as.numeric(Par1))
@@ -82,16 +88,23 @@ cab <- tabla1 %>%
 
 # Se determina la cantidad de cables requeridos para respetar la máxima cantidad permitida de pares,
 # Se define la cantidad final de pares y numero de tag asignado a cada cable
-cab2<-cab[0, ]
-for(l in 1:(max(cab$cb_req)-1)){
-  cab1<-cab%>%
-    filter(cb_req>l)%>%
-    mutate(pares = pares-l*max(pares_perm))
-  cab2<-bind_rows(cab2, cab1)
+
+# Si hay casos en los que se requiere mas de un multicoductor porque las señales superan los pares permitidos:
+if(max(cab$cb_req)>1){
+  cab2<-cab[0, ]
+  for(l in 1:(max(cab$cb_req)-1)){
+    cab1<-cab%>%
+      filter(cb_req>l)%>%
+      mutate(pares = pares-l*max(pares_perm))
+    cab2<-bind_rows(cab2, cab1)
+  }
+  cab<-bind_rows(cab, cab2)%>%
+    mutate(pares = ifelse(pares>max(pares_perm), max(pares_perm), pares),
+           cb_req = 1)
 }
-cab<-bind_rows(cab, cab2)%>%
-  mutate(pares = ifelse(pares>max(pares_perm), max(pares_perm), pares),
-         cb_req = 1)%>%
+
+# Definicion final de los cables
+cab<-cab%>%
   arrange(Origen, Tipo_Sig)%>%
   group_by(Origen, Tipo_Sig)%>%
   mutate(cable = paste(cable, cumsum(cb_req), sep = "-"))
